@@ -4,45 +4,13 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/pkg/errors"
 )
 
-type Pipelines struct {
-	sync.RWMutex
-	pipelines map[*Pipeline]struct{}
-}
-
-func NewPipelines() *Pipelines {
-	return &Pipelines{
-		pipelines: map[*Pipeline]struct{}{},
-	}
-}
-
-func (ps *Pipelines) Add(p *Pipeline) {
-	ps.Lock()
-	defer ps.Unlock()
-	ps.pipelines[p] = struct{}{}
-}
-
-func (ps *Pipelines) Remove(p *Pipeline) {
-	ps.Lock()
-	defer ps.Unlock()
-	delete(ps.pipelines, p)
-}
-
-func (ps *Pipelines) CloseAll() {
-	ps.Lock()
-	defer ps.Unlock()
-	for p := range ps.pipelines {
-		p.Close()
-	}
-	ps.pipelines = map[*Pipeline]struct{}{}
-}
-
 type Channel struct {
+	host        string
 	conn        net.Conn
 	stopC       chan struct{}
 	doneC       chan struct{}
@@ -50,8 +18,9 @@ type Channel struct {
 	listener    net.Listener
 }
 
-func NewChannel(conn net.Conn) *Channel {
+func NewChannel(conn net.Conn, host string) *Channel {
 	return &Channel{
+		host:        host,
 		conn:        conn,
 		stopC:       make(chan struct{}),
 		doneC:       make(chan struct{}),
@@ -60,8 +29,10 @@ func NewChannel(conn net.Conn) *Channel {
 }
 
 func (c *Channel) Close() {
+	Infof("channel: close ...")
 	close(c.stopC)
 	<-c.doneC
+	Infof("channel: close ... done")
 }
 
 func (c *Channel) Run() {
@@ -96,16 +67,17 @@ func (c *Channel) Run() {
 	}
 	//spawn listener
 	Infof("got init-response: name=%s port=%d ... spawn listener", ires.Name, ires.Port)
-	bind := fmt.Sprintf(":%d", ires.Port)
+	bind := fmt.Sprintf("%s:%d", c.host, ires.Port)
 	c.listener, err = net.Listen("tcp", bind)
 	if err != nil {
-		Errorf("listen on %q failed", bind)
+		Errorf("listen on %q failed: %v", bind, err)
+		c.ReportError(err.Error(), readC)
 		c.conn.Close()
 		<-readC
 		return
 	}
 
-	pipelines := NewPipelines()
+	pipelines := NewCloserCache()
 	listenDoneC := make(chan struct{})
 	go func() {
 		defer close(listenDoneC)
@@ -117,26 +89,29 @@ func (c *Channel) Run() {
 				return
 			}
 			Infof("channel: new connection from %q", conn.RemoteAddr())
-			pl, err := NewPipeline(conn)
+			pl, err := NewPipeline(conn, c.host)
 			if err != nil {
 				Errorf("channel: new pipeline: %v", err)
 			}
 			addr := pl.Addr()
 			Infof("channel: spawn pipeline with addr %q", addr)
 			go func() {
-				pipelines.Add(pl)
+				id := pipelines.Add(pl)
 				pl.Run()
-				pipelines.Remove(pl)
+				pipelines.Remove(id)
 			}()
-			WriteMessage(c.conn, WireTo{
-				Addr: addr,
-			})
+			WriteMessage(c.conn, WireTo{Addr: addr})
+			//c.RequestWire(addr, readC)
 		}
 	}()
 	defer func() {
+		Infof("channel: close listener ...")
 		c.listener.Close()
 		<-listenDoneC
+		Infof("channel: close listener ... done.")
+		Infof("channel: close pipelines ...")
 		pipelines.CloseAll()
+		Infof("channel: close pipelines ... done")
 	}()
 
 	for {
@@ -179,3 +154,29 @@ func (c *Channel) RequestInit(readC chan Message) (InitResponse, error) {
 		return InitResponse{}, errors.Errorf("response to init request is not init response but %T", m)
 	}
 }
+
+func (c *Channel) ReportError(errs string, readC chan Message) (Ack, error) {
+	m, err := c.Call(ReportError{Error: errs}, readC)
+	if err != nil {
+		return Ack{}, err
+	}
+	switch m := m.(type) {
+	case Ack:
+		return m, nil
+	default:
+		return Ack{}, errors.Errorf("response to init request is not init response but %T", m)
+	}
+}
+
+// func (c *Channel) RequestWire(addr string, readC chan Message) (Ack, error) {
+// 	m, err := c.Call(WireTo{Addr: addr}, readC)
+// 	if err != nil {
+// 		return Ack{}, err
+// 	}
+// 	switch m := m.(type) {
+// 	case Ack:
+// 		return m, nil
+// 	default:
+// 		return Ack{}, errors.Errorf("response to init request is not init response but %T", m)
+// 	}
+// }

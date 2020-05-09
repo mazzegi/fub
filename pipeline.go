@@ -1,6 +1,7 @@
 package fub
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"time"
@@ -13,8 +14,9 @@ type Pipeline struct {
 	doneC    chan struct{}
 }
 
-func NewPipeline(conn net.Conn) (*Pipeline, error) {
-	listener, err := net.Listen("tcp", "")
+func NewPipeline(conn net.Conn, host string) (*Pipeline, error) {
+	bind := fmt.Sprintf("%s:0", host)
+	listener, err := net.Listen("tcp", bind)
 	if err != nil {
 		return nil, err
 	}
@@ -37,18 +39,38 @@ func (p *Pipeline) Close() {
 }
 
 func (p *Pipeline) Run() {
-	Infof("pipeline: wait for incomming connection ...")
-	timer := time.AfterFunc(10*time.Second, func() {
-		Warnf("no connect after 10 seconds - close")
+	defer close(p.doneC)
+
+	connC := make(chan net.Conn)
+	go func() {
+		conn, err := p.listener.Accept()
+		if err != nil {
+			Infof("pipeline: accept-error: %v", err)
+			close(connC)
+			return
+		}
+		connC <- conn
+	}()
+
+	var conn net.Conn
+	select {
+	case <-p.stopC:
 		p.listener.Close()
-	})
-	conn, err := p.listener.Accept()
-	if err != nil {
-		Infof("pipeline: stop: no incomming connection")
 		p.inConn.Close()
 		return
+	case <-time.After(10 * time.Second):
+		p.listener.Close()
+		p.inConn.Close()
+		return
+	case lconn, ok := <-connC:
+		if !ok {
+			close(connC)
+			p.listener.Close()
+			p.inConn.Close()
+			return
+		}
+		conn = lconn
 	}
-	timer.Stop()
 
 	Infof("pipeline: start copying")
 	defer Infof("pipeline: stop copying")
@@ -68,24 +90,20 @@ func (p *Pipeline) Run() {
 		Infof("pipeline: copy: out->in ended: %v", err)
 	}()
 
-	defer close(p.doneC)
+	defer func() {
+		conn.Close()
+		p.inConn.Close()
+		<-outInDoneC
+		<-inOutDoneC
+	}()
+
 	for {
 		select {
 		case <-p.stopC:
-			conn.Close()
-			p.inConn.Close()
-			<-outInDoneC
-			<-inOutDoneC
 			return
 		case <-outInDoneC:
-			conn.Close()
-			p.inConn.Close()
-			<-inOutDoneC
 			return
 		case <-inOutDoneC:
-			conn.Close()
-			p.inConn.Close()
-			<-outInDoneC
 			return
 		}
 	}

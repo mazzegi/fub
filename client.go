@@ -6,16 +6,20 @@ import (
 )
 
 type Client struct {
-	host  string
-	stopC chan struct{}
-	doneC chan struct{}
+	host   string
+	expose int
+	target string
+	stopC  chan struct{}
+	doneC  chan struct{}
 }
 
-func NewClient(host string) *Client {
+func NewClient(host string, expose int, target string) *Client {
 	c := &Client{
-		host:  host,
-		stopC: make(chan struct{}),
-		doneC: make(chan struct{}),
+		host:   host,
+		expose: expose,
+		target: target,
+		stopC:  make(chan struct{}),
+		doneC:  make(chan struct{}),
 	}
 	return c
 }
@@ -66,13 +70,16 @@ func (c *Client) Run() {
 			switch m := m.(type) {
 			case InitRequest:
 				WriteMessage(conn, InitResponse{
-					Name: "Foo",
-					Port: 4711,
+					Name: "fub-client",
+					Port: c.expose,
 				})
 			case WireTo:
 				Infof("received: wire-to: %s", m.Addr)
-				w := NewWire(m.Addr, "127.0.0.1:5006")
+				w := NewWire(m.Addr, c.target)
 				go w.Run()
+			case ReportError:
+				Errorf("from fub: %s", m.Error)
+				return
 			}
 		}
 	}

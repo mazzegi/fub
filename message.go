@@ -19,6 +19,12 @@ type Message interface{}
 
 type InitRequest struct{}
 
+type Ack struct{}
+
+type ReportError struct {
+	Error string `json:"error"`
+}
+
 type InitResponse struct {
 	Name string `json:"name"`
 	Port int    `json:"port"`

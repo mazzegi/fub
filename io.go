@@ -16,6 +16,8 @@ func init() {
 	messageTypeRegistry.Register("init-request", InitRequest{})
 	messageTypeRegistry.Register("init-response", InitResponse{})
 	messageTypeRegistry.Register("wire-to", WireTo{})
+	messageTypeRegistry.Register("ack", Ack{})
+	messageTypeRegistry.Register("report-error", ReportError{})
 }
 
 type MessageTypeRegistry struct {

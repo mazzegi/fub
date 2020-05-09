@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	bind := flag.String("bind", ":9201", "bind address")
+	bind := flag.String("bind", "127.0.0.1:9201", "bind address")
 	flag.Parse()
 
 	fub.Infof("run fub server ...")
